@@ -24,7 +24,14 @@
 
 ## 下載安裝
 
-macOS（Apple Silicon）與 Windows（x64）的預編譯執行檔可從 [Releases](../../releases) 頁面下載。
+**macOS（Homebrew）**
+
+```sh
+brew tap zanets/tap
+brew install spektra
+```
+
+**其他平台** — macOS（Apple Silicon）與 Windows（x64）的預編譯執行檔可從 [Releases](../../releases) 頁面下載。
 
 ---
 

@@ -24,7 +24,14 @@ A desktop audio spectrogram viewer built with Rust and [egui](https://github.com
 
 ## Installation
 
-Pre-built binaries for macOS (Apple Silicon) and Windows (x64) are available on the [Releases](../../releases) page.
+**macOS (Homebrew)**
+
+```sh
+brew tap zanets/tap
+brew install spektra
+```
+
+**Other platforms** — pre-built binaries for macOS (Apple Silicon) and Windows (x64) are available on the [Releases](../../releases) page.
 
 ---
 
