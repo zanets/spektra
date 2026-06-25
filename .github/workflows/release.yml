@@ -1,91 +1,102 @@
-name: Release Build
+name: Release
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
+            target: aarch64-apple-darwin
             binary: spektra
-            artifact: spektra-macos-arm64
-            pkg: spektra-macos-arm64.tar.gz
-          - os: windows-latest
-            binary: spektra.exe
-            artifact: spektra-windows-x64
-            pkg: spektra-windows-x64.zip
-
-    runs-on: ${{ matrix.os }}
+            archive: spektra-macos-arm64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
-      # ── macOS ──────────────────────────────────────────────────────────────
       - name: Install FFmpeg deps (macOS)
-        if: runner.os == 'macOS'
         run: brew install ffmpeg lame x264 x265 svt-av1 dav1d opus libvpx libvmaf
 
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        run: cargo build --release
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
-        run: tar czf ${{ matrix.pkg }} -C target/release ${{ matrix.binary }}
+      - name: Package
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} .
+          tar czf ${{ matrix.archive }} ${{ matrix.binary }}
+          shasum -a 256 ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
 
-      # ── Windows ────────────────────────────────────────────────────────────
-      - name: Cache vcpkg packages (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed
-          key: vcpkg-ffmpeg-x64-windows-static-v1
-
-      - name: Install FFmpeg via vcpkg (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install ffmpeg:x64-windows-static
-        env:
-          VCPKG_ROOT: ${{ env.VCPKG_INSTALLATION_ROOT }}
-
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        run: cargo build --release
-        env:
-          FFMPEG_DIR: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed\x64-windows-static
-          VCPKG_ROOT: ${{ env.VCPKG_INSTALLATION_ROOT }}
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: Compress-Archive -Path target\release\${{ matrix.binary }} -DestinationPath ${{ matrix.pkg }}
-
-      # ── Upload ─────────────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.pkg }}
+          name: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
 
   release:
+    name: Create GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Merge checksums
+        run: cat artifacts/*.sha256 > artifacts/checksums.sha256
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/checksums.sha256
+
+  update-formula:
+    name: Update Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: zanets/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Download checksums
+        run: gh release download ${{ github.ref_name }} --repo zanets/spektra --pattern "checksums.sha256" --output checksums.sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Update Formula/spektra.rb
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          get_sha() { grep "$1" checksums.sha256 | awk '{print $1}'; }
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/spektra.rb
+          sed -i "/spektra-macos-arm64.tar.gz/{n;s/sha256 \".*\"/sha256 \"$(get_sha spektra-macos-arm64.tar.gz)\"/}" Formula/spektra.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/spektra.rb
+          git diff --cached --quiet || git commit -m "chore(formula): update spektra.rb for ${{ github.ref_name }}"
+          git push

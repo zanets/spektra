@@ -1,68 +1,71 @@
 #!/usr/bin/env bash
-# Usage: ./scripts/release.sh <version>   e.g. ./scripts/release.sh 0.2.0
 set -euo pipefail
 
-VERSION="${1:?Usage: ./scripts/release.sh <version>  (e.g. 0.2.0)}"
-TAG="v$VERSION"
-REPO="zanets/spektra"
-ASSET_ARM64="spektra-macos-arm64.tar.gz"
+CARGO_TOML="$(dirname "$0")/../Cargo.toml"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-TAP_DIR="$(cd "$SCRIPT_DIR/../../homebrew-tap" && pwd)"
-FORMULA="$TAP_DIR/Formula/spektra.rb"
+# --- helpers ---
+die() { echo "error: $*" >&2; exit 1; }
+current_version() { grep '^version' "$CARGO_TOML" | head -1 | sed 's/.*"\(.*\)".*/\1/'; }
+bump() {
+  local ver="$1" part="$2"
+  IFS='.' read -r maj min pat <<< "$ver"
+  case "$part" in
+    major) echo "$((maj+1)).0.0" ;;
+    minor) echo "${maj}.$((min+1)).0" ;;
+    patch) echo "${maj}.${min}.$((pat+1))" ;;
+  esac
+}
 
-cd "$REPO_DIR"
+# --- preflight ---
+command -v cargo >/dev/null || die "cargo not found"
+[[ -z "$(git status --porcelain)" ]] || die "working tree is dirty — commit or stash changes first"
 
-echo "→ Releasing $TAG"
+CURRENT="$(current_version)"
+echo "current version: $CURRENT"
 
-# 1. Bump version in Cargo.toml + Cargo.lock
-sed -i '' "s/^version = \"[0-9.]*\"/version = \"$VERSION\"/" Cargo.toml
-cargo update --package spektra
+# --- determine bump type ---
+BUMP="${1:-}"
+if [[ -z "$BUMP" ]]; then
+  echo "bump type? [patch/minor/major] (default: patch)"
+  read -r BUMP
+  BUMP="${BUMP:-patch}"
+fi
+[[ "$BUMP" =~ ^(patch|minor|major)$ ]] || die "invalid bump type: $BUMP"
 
-# 2. Commit, tag, push
-git add Cargo.toml Cargo.lock
-git commit -m "chore(release): bump version to $VERSION"
-git tag "$TAG"
-NOCHK=1 git push origin master
-git push origin "$TAG"
-echo "✓ Tag $TAG pushed — CI build started"
-
-# 3. Wait for the GitHub release to be created by CI
-echo "→ Waiting for GitHub release to appear..."
-until gh release view "$TAG" --repo "$REPO" &>/dev/null 2>&1; do
-  printf '.'; sleep 15
-done
-echo " found"
-
-# 4. Wait for the macOS tarball asset to be uploaded
-echo "→ Waiting for $ASSET_ARM64..."
-until gh release view "$TAG" --repo "$REPO" --json assets \
-    -q '.assets[].name' 2>/dev/null | grep -qx "$ASSET_ARM64"; do
-  printf '.'; sleep 20
-done
-echo " ready"
-
-# 5. Download and compute sha256
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-
-gh release download "$TAG" --repo "$REPO" -p "$ASSET_ARM64" -D "$TMP"
-SHA_ARM64=$(shasum -a 256 "$TMP/$ASSET_ARM64" | awk '{print $1}')
-echo "✓ sha256 (arm64): $SHA_ARM64"
-
-# 6. Update formula — version and sha256
-sed -i '' "s/version \"[0-9.]*\"/version \"$VERSION\"/" "$FORMULA"
-sed -i '' "s/sha256 \"[a-f0-9]*\"/sha256 \"$SHA_ARM64\"/" "$FORMULA"
-
-# 7. Commit and push homebrew tap
-cd "$TAP_DIR"
-git add Formula/spektra.rb
-git commit -m "feat(spektra): release $TAG"
-NOCHK=1 git push origin main
-echo "✓ Homebrew tap updated"
+NEXT="$(bump "$CURRENT" "$BUMP")"
+TAG="v${NEXT}"
 
 echo ""
-echo "Done!  Install with:"
-echo "  brew tap zanets/tap"
-echo "  brew install spektra"
+echo "  $CURRENT  →  $NEXT  (tag: $TAG)"
+echo ""
+read -r -p "proceed? [y/N] " CONFIRM
+[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "aborted"; exit 0; }
+
+# --- bump version in Cargo.toml ---
+if [[ "$(uname)" == "Darwin" ]]; then
+  sed -i '' "s/^version = \"${CURRENT}\"/version = \"${NEXT}\"/" "$CARGO_TOML"
+else
+  sed -i "s/^version = \"${CURRENT}\"/version = \"${NEXT}\"/" "$CARGO_TOML"
+fi
+
+# --- verify build ---
+echo "verifying build..."
+cargo build --release -q
+
+# --- commit + tag + push ---
+git add "$CARGO_TOML" Cargo.lock
+git commit -m "chore(release): bump version to ${NEXT}"
+git tag "$TAG" -m "release ${NEXT}"
+
+echo ""
+echo "created commit and tag $TAG"
+echo "push now? [y/N]"
+read -r PUSH
+if [[ "$PUSH" =~ ^[Yy]$ ]]; then
+  NOCHK=1 git push origin HEAD
+  NOCHK=1 git push origin "$TAG"
+  echo "pushed — GitHub Actions will build, publish the release, and update the Homebrew formula"
+else
+  echo "run when ready:"
+  echo "  NOCHK=1 git push origin HEAD && NOCHK=1 git push origin $TAG"
+fi
