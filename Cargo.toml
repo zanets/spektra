@@ -1,0 +1,17 @@
+[package]
+name = "spektra"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "spektra"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.34", features = ["default"] }
+rustfft = "6"
+ffmpeg-next = { version = "8", features = ["static"] }
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2"
+epaint_default_fonts = "0.34"

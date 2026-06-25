@@ -1,0 +1,81 @@
+name: Release Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            binary: spektra
+            artifact: spektra-macos-arm64
+          - os: windows-latest
+            binary: spektra.exe
+            artifact: spektra-windows-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ── macOS ──────────────────────────────────────────────────────────────
+      - name: Install FFmpeg deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg lame x264 x265 svt-av1 dav1d opus libvpx libvmaf
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --release
+        # config.toml [target.aarch64-apple-darwin] handles -L /opt/homebrew/lib -l c++
+
+      # ── Windows ────────────────────────────────────────────────────────────
+      - name: Cache vcpkg packages (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed
+          key: vcpkg-ffmpeg-x64-windows-static-v1
+
+      - name: Install FFmpeg via vcpkg (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install ffmpeg:x64-windows-static
+        env:
+          VCPKG_ROOT: ${{ env.VCPKG_INSTALLATION_ROOT }}
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --release
+        env:
+          FFMPEG_DIR: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed\x64-windows-static
+          VCPKG_ROOT: ${{ env.VCPKG_INSTALLATION_ROOT }}
+
+      # ── Upload ─────────────────────────────────────────────────────────────
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release/${{ matrix.binary }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
