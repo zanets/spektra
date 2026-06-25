@@ -14,9 +14,11 @@ jobs:
           - os: macos-14
             binary: spektra
             artifact: spektra-macos-arm64
+            pkg: spektra-macos-arm64.tar.gz
           - os: windows-latest
             binary: spektra.exe
             artifact: spektra-windows-x64
+            pkg: spektra-windows-x64.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -35,7 +37,10 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: cargo build --release
-        # config.toml [target.aarch64-apple-darwin] handles -L /opt/homebrew/lib -l c++
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: tar czf ${{ matrix.pkg }} -C target/release ${{ matrix.binary }}
 
       # ── Windows ────────────────────────────────────────────────────────────
       - name: Cache vcpkg packages (Windows)
@@ -58,11 +63,15 @@ jobs:
           FFMPEG_DIR: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed\x64-windows-static
           VCPKG_ROOT: ${{ env.VCPKG_INSTALLATION_ROOT }}
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path target\release\${{ matrix.binary }} -DestinationPath ${{ matrix.pkg }}
+
       # ── Upload ─────────────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/release/${{ matrix.binary }}
+          path: ${{ matrix.pkg }}
 
   release:
     needs: build
@@ -75,7 +84,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: artifacts/*
